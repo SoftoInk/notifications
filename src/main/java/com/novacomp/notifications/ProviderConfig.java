@@ -5,6 +5,7 @@ import lombok.Getter;
 import lombok.Singular;
 import lombok.ToString;
 
+import java.util.Collections;
 import java.util.Map;
 
 /**
@@ -35,6 +36,15 @@ public class ProviderConfig {
     /** Arbitrary provider-specific key/value settings. */
     @Singular
     private final Map<String, String> properties;
+
+    /**
+     * Returns an unmodifiable view of all provider-specific properties.
+     * This is a defense-in-depth override ensuring immutability regardless
+     * of the underlying Lombok-generated collection type.
+     */
+    public Map<String, String> getProperties() {
+        return Collections.unmodifiableMap(properties);
+    }
 
     /**
      * Returns a property value, or {@code null} if not present.

@@ -3,6 +3,7 @@ package com.novacomp.notifications;
 import com.novacomp.notifications.channel.email.EmailNotification;
 import com.novacomp.notifications.channel.push.PushNotification;
 import com.novacomp.notifications.channel.sms.SmsNotification;
+import com.novacomp.notifications.event.NotificationEventPublisher;
 import com.novacomp.notifications.exception.NotificationException;
 import com.novacomp.notifications.exception.ValidationException;
 import com.novacomp.notifications.retry.RetryPolicy;
@@ -277,5 +278,69 @@ class NotificationServiceTest {
 
         assertThat(results).hasSize(2);
         assertThat(results).allMatch(NotificationResult::isSuccessful);
+    }
+
+    // ---------------------------------------------------------------
+    // Custom event publisher injection
+    // ---------------------------------------------------------------
+
+    @Test
+    @DisplayName("custom NotificationEventPublisher receives publish calls")
+    void customEventPublisherReceivesPublishCalls() {
+        NotificationResult expected = NotificationResult.success("id", "Mock", "msg-1");
+        when(emailSender.send(any())).thenReturn(expected);
+
+        AtomicReference<NotificationResult> captured = new AtomicReference<>();
+        NotificationEventPublisher customPublisher = new NotificationEventPublisher() {
+            @Override
+            public void publish(Notification notification, NotificationResult result) {
+                captured.set(result);
+            }
+
+            @Override
+            public void addListener(NotificationListener listener) {
+                // no-op for this test
+            }
+        };
+
+        service = baseBuilder()
+                .eventPublisher(customPublisher)
+                .build();
+
+        service.send(validEmail());
+
+        assertThat(captured.get()).isSameAs(expected);
+    }
+
+    @Test
+    @DisplayName("builder rejects null event publisher")
+    void builderRejectsNullEventPublisher() {
+        assertThatThrownBy(() -> baseBuilder().eventPublisher(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    @DisplayName("builder rejects null retry policy")
+    void builderRejectsNullRetryPolicy() {
+        assertThatThrownBy(() -> baseBuilder().retryPolicy(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    // ---------------------------------------------------------------
+    // Async with virtual threads
+    // ---------------------------------------------------------------
+
+    @Test
+    @DisplayName("sendAsync works with default virtual thread executor")
+    void sendAsyncWorksWithVirtualThreads() throws Exception {
+        NotificationResult expected = NotificationResult.success("id", "Mock", "msg-1");
+        when(emailSender.send(any())).thenReturn(expected);
+
+        service = baseBuilder().build();
+
+        CompletableFuture<NotificationResult> future = service.sendAsync(validEmail());
+        NotificationResult result = future.get();
+
+        assertThat(result).isSameAs(expected);
     }
 }

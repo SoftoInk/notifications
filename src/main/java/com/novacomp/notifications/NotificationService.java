@@ -1,5 +1,7 @@
 package com.novacomp.notifications;
 
+import com.novacomp.notifications.event.DefaultNotificationEventPublisher;
+import com.novacomp.notifications.event.NotificationEventPublisher;
 import com.novacomp.notifications.exception.NotificationException;
 import com.novacomp.notifications.retry.RetryPolicy;
 import org.slf4j.Logger;
@@ -10,13 +12,14 @@ import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
 /**
- * Central façade for sending notifications through any registered channel.
+ * Central facade for sending notifications through any registered channel.
  *
  * <p>The service maintains a dispatch table that maps each {@link Notification}
  * subclass to its {@link NotificationSender}. When {@link #send} is called the
  * runtime type of the notification selects the appropriate sender, which is
  * invoked through the configured {@link RetryPolicy}. Registered
- * {@link NotificationListener}s are notified after each successful attempt.</p>
+ * {@link NotificationListener}s are notified after each successful attempt
+ * via the {@link NotificationEventPublisher}.</p>
  *
  * <h3>Quick start</h3>
  * <pre>{@code
@@ -44,17 +47,17 @@ public class NotificationService implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
 
     private final Map<Class<? extends Notification>, NotificationSender<?>> senders;
-    private final List<NotificationListener> listeners;
+    private final NotificationEventPublisher eventPublisher;
     private final RetryPolicy retryPolicy;
     private final ExecutorService executorService;
 
     private NotificationService(Builder builder) {
         this.senders = Collections.unmodifiableMap(new HashMap<>(builder.senders));
-        this.listeners = Collections.unmodifiableList(new ArrayList<>(builder.listeners));
         this.retryPolicy = builder.retryPolicy != null ? builder.retryPolicy : RetryPolicy.none();
+        this.eventPublisher = builder.eventPublisher;
         this.executorService = builder.executorService != null
                 ? builder.executorService
-                : Executors.newCachedThreadPool();
+                : Executors.newVirtualThreadPerTaskExecutor();
     }
 
     /* ------------------------------------------------------------------ */
@@ -87,7 +90,7 @@ public class NotificationService implements AutoCloseable {
 
         NotificationResult result = retryPolicy.execute(() -> sender.send(notification));
 
-        notifyListeners(notification, result);
+        eventPublisher.publish(notification, result);
         return result;
     }
 
@@ -141,20 +144,6 @@ public class NotificationService implements AutoCloseable {
                         .collect(Collectors.toList()));
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  Internal                                                           */
-    /* ------------------------------------------------------------------ */
-
-    private void notifyListeners(Notification notification, NotificationResult result) {
-        for (NotificationListener listener : listeners) {
-            try {
-                listener.onResult(notification, result);
-            } catch (Exception e) {
-                log.warn("NotificationListener threw an exception — ignoring", e);
-            }
-        }
-    }
-
     @Override
     public void close() {
         executorService.shutdown();
@@ -174,11 +163,13 @@ public class NotificationService implements AutoCloseable {
     public static final class Builder {
 
         private final Map<Class<? extends Notification>, NotificationSender<?>> senders = new LinkedHashMap<>();
-        private final List<NotificationListener> listeners = new ArrayList<>();
+        private NotificationEventPublisher eventPublisher;
         private RetryPolicy retryPolicy;
         private ExecutorService executorService;
 
-        private Builder() {}
+        private Builder() {
+            this.eventPublisher = new DefaultNotificationEventPublisher();
+        }
 
         /**
          * Registers a sender for its declared notification type.
@@ -190,22 +181,34 @@ public class NotificationService implements AutoCloseable {
             return this;
         }
 
-        /** Adds a listener that observes every send outcome. */
+        /**
+         * Adds a listener that observes every send outcome.
+         * Delegates to the configured {@link NotificationEventPublisher}.
+         */
         public Builder addListener(NotificationListener listener) {
             Objects.requireNonNull(listener, "Listener must not be null");
-            listeners.add(listener);
+            eventPublisher.addListener(listener);
+            return this;
+        }
+
+        /**
+         * Sets a custom event publisher. Replaces the default publisher and
+         * any listeners previously added via {@link #addListener}.
+         */
+        public Builder eventPublisher(NotificationEventPublisher eventPublisher) {
+            this.eventPublisher = Objects.requireNonNull(eventPublisher, "EventPublisher must not be null");
             return this;
         }
 
         /** Sets the retry policy applied to every send. Defaults to no retries. */
         public Builder retryPolicy(RetryPolicy retryPolicy) {
-            this.retryPolicy = retryPolicy;
+            this.retryPolicy = Objects.requireNonNull(retryPolicy, "RetryPolicy must not be null");
             return this;
         }
 
         /**
          * Provides a custom executor for async sends.
-         * If not set, a cached thread pool is created internally.
+         * If not set, a virtual-thread-per-task executor is created internally (Java 21+).
          */
         public Builder executorService(ExecutorService executorService) {
             this.executorService = executorService;
